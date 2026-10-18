@@ -1,4 +1,6 @@
-package com.ariesdb.core;
+package com.ariesdb.engine;
+
+import com.ariesdb.storage.RID;
 
 /**
  * The standard contract for all AriesDB storage engine implementations.

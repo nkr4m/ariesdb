@@ -36,7 +36,6 @@
 
     <!-- 2. CRITICAL: Defines the sub-modules -->
     <modules>
-        <module>aries-core</module>
         <module>aries-engine-heap</module>
         <module>aries-cli</module>
     </modules>
