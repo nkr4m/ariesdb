@@ -1,20 +1,20 @@
-package com.ariesdb.index.btree;
+package com.ariesdb.index.bminustree;
 
 import com.ariesdb.common.utils.RID;
 import com.ariesdb.index.StorageIndex;
 
-public abstract class BTreeIndex<K extends Comparable<K>> implements StorageIndex<K> {
+public abstract class BMinusTreeIndex<K extends Comparable<K>> implements StorageIndex<K> {
     protected int degree; 
-    protected BTreeNode<K> root;
+    protected BMinusTreeNode<K> root;
 
-    public BTreeIndex(int degree) {
+    public BMinusTreeIndex(int degree) {
         if (degree < 2) {
             throw new IllegalArgumentException("Degree must be at least 2");
         }
         this.degree = degree;
     }
 
-    public BTreeNode<K> getRoot() {
+    public BMinusTreeNode<K> getRoot() {
         return root;
     }
 
