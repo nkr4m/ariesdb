@@ -3,6 +3,7 @@ package com.ariesdb.cli;
 import com.ariesdb.engine.AriesEngine;
 import com.ariesdb.storage.disk.DiskManager;
 
+import jakarta.annotation.PreDestroy; // Spring Boot 3+ annotation
 import org.springframework.shell.core.command.annotation.Command;
 import org.springframework.shell.core.command.annotation.Argument;
 import org.springframework.stereotype.Component;
@@ -11,7 +12,6 @@ import org.springframework.stereotype.Component;
 public class DatabaseCommands {
 
     private DiskManager diskManager;
-    // Using Integer as our Primary Key type for the B-Tree
     private AriesEngine<Integer> engine; 
     private boolean isRunning = false;
 
@@ -19,9 +19,7 @@ public class DatabaseCommands {
     public String startDB(@Argument(index = 0, defaultValue = "testdb") String dbName) {
         try {
             String fileName = dbName + ".db";
-            // 1. Initialize physical storage
             diskManager = new DiskManager(fileName);
-            // 2. Initialize logical engine (B-Tree degree set to 3)
             engine = new AriesEngine<>(diskManager, 3);
             
             isRunning = true;
@@ -30,6 +28,20 @@ public class DatabaseCommands {
             return "ERROR: Failed to start database - " + e.getMessage();
         }
     }
+
+    // --- AUTOMATIC FLUSH ON SHUTDOWN ---
+    @PreDestroy
+    public void cleanup() {
+        if (engine != null) {
+            try {
+                engine.close();
+                System.out.println("SUCCESS: Database engine closed and flushed to disk.");
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+        }
+    }
+    // -----------------------------------
 
     @Command(name = "insert", description = "Insert a record using a primary key.")
     public String insertRecord(@Argument(index = 0) int key, @Argument(index = 1) String data) {

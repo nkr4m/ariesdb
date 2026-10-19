@@ -135,4 +135,21 @@ public class SlottedPage {
         
         return record;
     }
+    
+    /**
+     * Physically marks a record as deleted by setting its length to 0 (Tombstone).
+     */
+    public boolean deleteRecord(int slotId) {
+        int slotCount = getSlotCount();
+        if (slotId >= slotCount) {
+            return false;
+        }
+
+        int slotLocation = HEADER_SIZE + (slotId * SLOT_SIZE);
+        
+        // Overwrite the length integer (Offset + 4) to 0
+        buffer.putInt(slotLocation + 4, 0); 
+        return true;
+    }
+    
 }
