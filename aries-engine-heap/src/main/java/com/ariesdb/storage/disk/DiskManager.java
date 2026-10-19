@@ -5,8 +5,6 @@ import java.io.RandomAccessFile;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
 
-import com.ariesdb.storage.page.SlottedPage;
-
 public class DiskManager {
     private FileChannel fileChannel;
     private static final int PAGE_SIZE = 4096;
@@ -18,27 +16,43 @@ public class DiskManager {
         this.fileChannel = raf.getChannel();
     }
 
-    public void writePage(int pageId, SlottedPage page) throws Exception {
+    /**
+     * Writes the contents of the provided ByteBuffer directly to the physical disk.
+     */
+    public void writePage(int pageId, ByteBuffer pageData) throws Exception {
         long offset = (long) pageId * PAGE_SIZE;
-        ByteBuffer buffer = ByteBuffer.wrap(page.getPageBytes());
+        
+        // Rewind buffer position to 0 to ensure we write the whole 4KB block
+        pageData.rewind(); 
         
         fileChannel.position(offset);
-        fileChannel.write(buffer);
+        fileChannel.write(pageData);
         fileChannel.force(false); // fsync: forces OS to write to physical disk immediately
     }
 
-    public SlottedPage readPage(int pageId) throws Exception {
+    /**
+     * Reads a 4KB block from the disk and fills the provided ByteBuffer.
+     * Prevents memory allocation overhead.
+     */
+    public void readPage(int pageId, ByteBuffer pageData) throws Exception {
         long offset = (long) pageId * PAGE_SIZE;
-        ByteBuffer buffer = ByteBuffer.allocate(PAGE_SIZE);
+        
+        // Clear the buffer to prepare it for incoming bytes
+        pageData.clear(); 
         
         fileChannel.position(offset);
-        int bytesRead = fileChannel.read(buffer);
+        int bytesRead = fileChannel.read(pageData);
         
+        // If the file is smaller than the requested page (e.g., brand new page),
+        // fill the remaining space in the buffer with zeros.
         if (bytesRead < PAGE_SIZE) {
-            // Page doesn't exist yet, return a fresh one
-            return new SlottedPage(pageId);
+            while (pageData.hasRemaining()) {
+                pageData.put((byte) 0);
+            }
         }
-        return new SlottedPage(buffer.array());
+        
+        // Reset position back to 0 so the Buffer Pool / Engine can read from the beginning
+        pageData.rewind(); 
     }
 
     /**

@@ -1,55 +1,91 @@
+// src/main/java/com/ariesdb/storage/page/SlottedPage.java
 package com.ariesdb.storage.page;
 
-import java.nio.ByteBuffer;
-
 import com.ariesdb.common.config.Constants;
-
+import java.nio.ByteBuffer;
+/**
+ * Represents the physical layout of a 4KB (4,096 bytes) memory page.
+ * The page uses a slotted architecture where the slot directory grows forward 
+ * from the top, and the variable-length data grows backward from the bottom.
+ * 
+ * <pre>
+ * [ START OF PAGE - BYTE 0 ]
+ * ---------------------------------------------------------
+ * | HEADER (8 Bytes)                                      |
+ * |-------------------------------------------------------|
+ * | Bytes 0-3:  Page ID (e.g., 0)                         |
+ * | Bytes 4-7:  Slot Count (e.g., 2 records inserted)     |
+ * ---------------------------------------------------------
+ * | SLOT DIRECTORY (8 Bytes per slot, growing FORWARD)    |
+ * |-------------------------------------------------------|
+ * | Bytes 8-15:  Slot 0 (Offset: 4091, Length: 5)         |
+ * | Bytes 16-23: Slot 1 (Offset: 4085, Length: 6)         |
+ * | Bytes 24-31: [ Next slot goes here... ]               |
+ * ---------------------------------------------------------
+ * |                      ^                                |
+ * |                      |                                |
+ * |                                                       |
+ * |                  FREE SPACE                           |
+ * |       (This empty gap shrinks from both sides)        |
+ * |                                                       |
+ * |                      |                                |
+ * |                      v                                |
+ * ---------------------------------------------------------
+ * | DATA RECORDS (Variable length, growing BACKWARD)      |
+ * |-------------------------------------------------------|
+ * | Bytes 4085-4090: "Record" (Data for Slot 1)           |
+ * | Bytes 4091-4095: "Hello"  (Data for Slot 0)           |
+ * ---------------------------------------------------------
+ * [ END OF PAGE - BYTE 4096 ]
+ * </pre>
+ */
 public class SlottedPage {
     public static final int PAGE_SIZE = Constants.PAGE_SIZE;
     private static final int HEADER_SIZE = 8; // 4 bytes for pageId, 4 for slotCount
     private static final int SLOT_SIZE = 8;   // 4 bytes for offset, 4 for length
 
-    private int pageId;
-    private int slotCount;
-    private int freeSpacePointer;
-    private byte[] data;
-    private ByteBuffer buffer;
+    private final Page page;
+    private final ByteBuffer buffer;
 
-    // Create a brand new page
-    public SlottedPage(int pageId) {
-        this.pageId = pageId;
-        this.slotCount = 0;
-        this.freeSpacePointer = PAGE_SIZE; // Data starts at the very end and grows backwards
-        this.data = new byte[PAGE_SIZE];
-        this.buffer = ByteBuffer.wrap(data);
-        
-        // Write the header
-        buffer.putInt(0, pageId);
-        buffer.putInt(4, slotCount);
+    /**
+     * Wraps an existing memory frame (Page) from the Buffer Pool.
+     */
+    public SlottedPage(Page page) {
+        this.page = page;
+        this.buffer = page.getData();
     }
 
-    // Load an existing page from disk
-    public SlottedPage(byte[] rawBytes) {
-        this.data = rawBytes;
-        this.buffer = ByteBuffer.wrap(data);
-        this.pageId = buffer.getInt(0);
-        this.slotCount = buffer.getInt(4);
-        
-        // Calculate where the free space starts by looking at the last inserted slot
+    /**
+     * Formats a brand new page with an empty header.
+     * Called by AriesEngine when a new heap page is allocated.
+     */
+    public void init() {
+        buffer.putInt(0, page.getPageId());
+        buffer.putInt(4, 0); // slotCount = 0
+    }
+
+    public int getSlotCount() {
+        return buffer.getInt(4);
+    }
+
+    private int getFreeSpacePointer() {
+        int slotCount = getSlotCount();
         if (slotCount == 0) {
-            this.freeSpacePointer = PAGE_SIZE;
-        } else {
-            int lastSlotOffset = HEADER_SIZE + ((slotCount - 1) * SLOT_SIZE);
-            int dataOffset = buffer.getInt(lastSlotOffset);
-            this.freeSpacePointer = dataOffset;
+            return PAGE_SIZE; // Data starts at the very end and grows backwards
         }
+        // The free space pointer is exactly where the last inserted record begins
+        int lastSlotOffset = HEADER_SIZE + ((slotCount - 1) * SLOT_SIZE);
+        return buffer.getInt(lastSlotOffset);
     }
 
     /**
      * Inserts raw bytes into the page.
-     * @return The slotId, or -1 if the page is full.
+     * @return The assigned slotId, or -1 if the page is full.
      */
-    public int insert(byte[] record) {
+    public int insertRecord(byte[] record) {
+        int slotCount = getSlotCount();
+        int freeSpacePointer = getFreeSpacePointer();
+
         int spaceNeeded = record.length + SLOT_SIZE;
         int currentHeaderEnd = HEADER_SIZE + (slotCount * SLOT_SIZE);
         
@@ -61,43 +97,42 @@ public class SlottedPage {
         // 1. Move the free space pointer backward
         freeSpacePointer -= record.length;
 
-        // 2. Write the actual data at the end of the page
-        System.arraycopy(record, 0, data, freeSpacePointer, record.length);
+        // 2. Write the actual data directly into the off-heap ByteBuffer
+        buffer.position(freeSpacePointer);
+        buffer.put(record);
 
         // 3. Write the slot directory entry (offset and length)
         buffer.putInt(currentHeaderEnd, freeSpacePointer);
         buffer.putInt(currentHeaderEnd + 4, record.length);
 
-        // 4. Update the header
-        int assignedSlotId = slotCount;
-        slotCount++;
-        buffer.putInt(4, slotCount);
+        // 4. Update the header's slot count
+        buffer.putInt(4, slotCount + 1);
 
-        return assignedSlotId;
+        return slotCount; // This is the assigned slotId
     }
 
     /**
      * Reads a record instantly using just its Slot ID.
      */
-    public byte[] read(int slotId) {
+    public byte[] getRecord(int slotId) {
+        int slotCount = getSlotCount();
         if (slotId >= slotCount) {
-            throw new IllegalArgumentException("Invalid Slot ID");
+            throw new IllegalArgumentException("Invalid Slot ID: " + slotId);
         }
 
         int slotLocation = HEADER_SIZE + (slotId * SLOT_SIZE);
         int offset = buffer.getInt(slotLocation);
         int length = buffer.getInt(slotLocation + 4);
 
-        byte[] record = new byte[length];
-        System.arraycopy(data, offset, record, 0, length);
-        return record;
-    }
+        if (length == 0) {
+            return null; // Record was deleted/tombstoned
+        }
 
-    public byte[] getPageBytes() {
-        return data;
-    }
-    
-    public int getPageId() {
-        return pageId;
+        // Read the exact bytes from the data portion of the buffer
+        byte[] record = new byte[length];
+        buffer.position(offset);
+        buffer.get(record);
+        
+        return record;
     }
 }
