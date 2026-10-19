@@ -1,9 +1,11 @@
-package com.ariesdb.storage;
+package com.ariesdb.storage.page;
 
 import java.nio.ByteBuffer;
 
+import com.ariesdb.common.config.Constants;
+
 public class SlottedPage {
-    public static final int PAGE_SIZE = 4096;
+    public static final int PAGE_SIZE = Constants.PAGE_SIZE;
     private static final int HEADER_SIZE = 8; // 4 bytes for pageId, 4 for slotCount
     private static final int SLOT_SIZE = 8;   // 4 bytes for offset, 4 for length
 

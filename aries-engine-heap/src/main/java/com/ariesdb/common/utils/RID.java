@@ -1,4 +1,4 @@
-package com.ariesdb.storage;
+package com.ariesdb.common.utils;
 
 import java.util.Objects;
 

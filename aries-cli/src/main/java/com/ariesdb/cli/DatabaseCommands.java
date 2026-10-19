@@ -1,7 +1,8 @@
 package com.ariesdb.cli;
 
 import com.ariesdb.engine.AriesEngine;
-import com.ariesdb.storage.DiskManager;
+import com.ariesdb.storage.disk.DiskManager;
+
 import org.springframework.shell.core.command.annotation.Command;
 import org.springframework.shell.core.command.annotation.Argument;
 import org.springframework.stereotype.Component;

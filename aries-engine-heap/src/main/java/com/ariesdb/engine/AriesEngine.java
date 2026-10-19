@@ -1,10 +1,10 @@
 package com.ariesdb.engine;
 
-import com.ariesdb.indexes.StandardBTree;
-import com.ariesdb.indexes.StorageIndex;
-import com.ariesdb.storage.DiskManager;
-import com.ariesdb.storage.RID;
-import com.ariesdb.storage.SlottedPage;
+import com.ariesdb.common.utils.RID;
+import com.ariesdb.index.StandardBTree;
+import com.ariesdb.index.StorageIndex;
+import com.ariesdb.storage.disk.DiskManager;
+import com.ariesdb.storage.page.SlottedPage;
 
 /**
  * The main facade for the Aries Storage Engine.

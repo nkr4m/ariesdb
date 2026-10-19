@@ -1,7 +1,6 @@
-package com.ariesdb.indexes;
+package com.ariesdb.index;
 
-
-import com.ariesdb.storage.RID;
+import com.ariesdb.common.utils.RID;
 
 /**
  * The core contract for any index structure in AriesDB.

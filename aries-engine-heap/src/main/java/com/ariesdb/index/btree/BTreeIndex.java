@@ -1,14 +1,10 @@
-package com.ariesdb.indexes;
+package com.ariesdb.index.btree;
 
+import com.ariesdb.common.utils.RID;
+import com.ariesdb.index.StorageIndex;
 
-import com.ariesdb.storage.RID;
-
-/**
- * Abstract parent class for B-Tree variants.
- * Holds the degree configuration and the root node.
- */
 public abstract class BTreeIndex<K extends Comparable<K>> implements StorageIndex<K> {
-    protected int degree; // Minimum degree (t)
+    protected int degree; 
     protected BTreeNode<K> root;
 
     public BTreeIndex(int degree) {

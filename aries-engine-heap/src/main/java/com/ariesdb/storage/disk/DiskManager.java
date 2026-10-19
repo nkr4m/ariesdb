@@ -1,10 +1,11 @@
-package com.ariesdb.storage;
-
+package com.ariesdb.storage.disk;
 
 import java.io.File;
 import java.io.RandomAccessFile;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
+
+import com.ariesdb.storage.page.SlottedPage;
 
 public class DiskManager {
     private FileChannel fileChannel;
