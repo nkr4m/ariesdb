@@ -3,33 +3,55 @@ package com.ariesdb.cli;
 import com.ariesdb.engine.AriesEngine;
 import com.ariesdb.storage.disk.DiskManager;
 
-import jakarta.annotation.PreDestroy; // Spring Boot 3+ annotation
+import jakarta.annotation.PreDestroy;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.shell.core.command.annotation.Command;
 import org.springframework.shell.core.command.annotation.Argument;
 import org.springframework.stereotype.Component;
 
+import java.io.File;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+
 @Component
 public class DatabaseCommands {
 
-    private DiskManager diskManager;
+    @Value("${ariesdb.storage.path:./aries_data}")
+    private String storagePath;
+
     private AriesEngine<Integer> engine; 
     private boolean isRunning = false;
 
     @Command(name = "start", description = "Boot up the database engine.")
     public String startDB(@Argument(index = 0, defaultValue = "testdb") String dbName) {
         try {
-            String fileName = dbName + ".db";
-            diskManager = new DiskManager(fileName);
-            engine = new AriesEngine<>(diskManager, 3);
+            // 1. Ensure the target directory exists
+            Path directoryPath = Paths.get(storagePath);
+            if (!Files.exists(directoryPath)) {
+                Files.createDirectories(directoryPath);
+            }
+
+            // 2. Construct the base path (e.g., ./aries_data/testdb)
+            String basePath = new File(directoryPath.toFile(), dbName).getAbsolutePath();
+            
+            // 3. Create separate files for Heap Data and B-Tree Index
+            String heapPath = basePath + ".db";
+            String indexPath = basePath + ".idx";
+
+            // 4. Boot the engine with TWO DiskManagers
+            DiskManager heapDiskManager = new DiskManager(heapPath);
+            DiskManager indexDiskManager = new DiskManager(indexPath);
+            
+            engine = new AriesEngine<>(heapDiskManager, indexDiskManager, basePath, 3);
             
             isRunning = true;
-            return "SUCCESS: AriesDB started. Bound to file: " + fileName;
+            return "SUCCESS: AriesDB started. Files bound to: " + basePath + " (.*)";
         } catch (Exception e) {
             return "ERROR: Failed to start database - " + e.getMessage();
         }
     }
 
-    // --- AUTOMATIC FLUSH ON SHUTDOWN ---
     @PreDestroy
     public void cleanup() {
         if (engine != null) {
@@ -41,7 +63,6 @@ public class DatabaseCommands {
             }
         }
     }
-    // -----------------------------------
 
     @Command(name = "insert", description = "Insert a record using a primary key.")
     public String insertRecord(@Argument(index = 0) int key, @Argument(index = 1) String data) {
@@ -93,6 +114,37 @@ public class DatabaseCommands {
                            : "ERROR: Key not found.";
         } catch (Exception e) {
             return "ERROR: " + e.getMessage();
+        }
+    }
+
+    @Command(name = "checkpoint", description = "Force a database checkpoint to truncate WAL recovery time.")
+    public String checkpoint() {
+        if (!isRunning) return "ERROR: Please run 'start' first.";
+        
+        try {
+            engine.performCheckpoint();
+            return "CHECKPOINT SUCCESS -> Dirty pages flushed and WAL offset saved.";
+        } catch (Exception e) {
+            return "ERROR: Checkpoint failed - " + e.getMessage();
+        }
+    }
+    
+    
+    @Command(name = "stress", description = "Insert multiple records sequentially to test B-Tree splitting.")
+    public String stressTest(@Argument(index = 0, defaultValue = "1000") int count) {
+        if (!isRunning) return "ERROR: Please run 'start' first.";
+        
+        long startTime = System.currentTimeMillis();
+        try {
+            for (int i = 0; i < count; i++) {
+                // Generates dummy data like "Payload-450"
+                String payload = "Payload-" + i;
+                engine.insert(i, payload.getBytes());
+            }
+            long duration = System.currentTimeMillis() - startTime;
+            return "STRESS TEST SUCCESS -> Inserted " + count + " records in " + duration + "ms. B-Tree splits executed.";
+        } catch (Exception e) {
+            return "ERROR during stress test: " + e.getMessage();
         }
     }
 }

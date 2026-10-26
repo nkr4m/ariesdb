@@ -3,6 +3,7 @@ package com.ariesdb.storage.page;
 
 import com.ariesdb.common.config.Constants;
 import java.nio.ByteBuffer;
+
 /**
  * Represents the physical layout of a 4KB (4,096 bytes) memory page.
  * The page uses a slotted architecture where the slot directory grows forward 
@@ -11,16 +12,17 @@ import java.nio.ByteBuffer;
  * <pre>
  * [ START OF PAGE - BYTE 0 ]
  * ---------------------------------------------------------
- * | HEADER (8 Bytes)                                      |
+ * | HEADER (16 Bytes)                                     |
  * |-------------------------------------------------------|
  * | Bytes 0-3:  Page ID (e.g., 0)                         |
  * | Bytes 4-7:  Slot Count (e.g., 2 records inserted)     |
+ * | Bytes 8-15: PageLSN (Log Sequence Number)             |
  * ---------------------------------------------------------
  * | SLOT DIRECTORY (8 Bytes per slot, growing FORWARD)    |
  * |-------------------------------------------------------|
- * | Bytes 8-15:  Slot 0 (Offset: 4091, Length: 5)         |
- * | Bytes 16-23: Slot 1 (Offset: 4085, Length: 6)         |
- * | Bytes 24-31: [ Next slot goes here... ]               |
+ * | Bytes 16-23: Slot 0 (Offset: 4091, Length: 5)         |
+ * | Bytes 24-31: Slot 1 (Offset: 4085, Length: 6)         |
+ * | Bytes 32-39: [ Next slot goes here... ]               |
  * ---------------------------------------------------------
  * |                      ^                                |
  * |                      |                                |
@@ -41,7 +43,8 @@ import java.nio.ByteBuffer;
  */
 public class SlottedPage {
     public static final int PAGE_SIZE = Constants.PAGE_SIZE;
-    private static final int HEADER_SIZE = 8; // 4 bytes for pageId, 4 for slotCount
+    // --- UPDATED: Header is now 16 bytes to fit the 8-byte LSN ---
+    private static final int HEADER_SIZE = 16; 
     private static final int SLOT_SIZE = 8;   // 4 bytes for offset, 4 for length
 
     private final Page page;
@@ -56,13 +59,23 @@ public class SlottedPage {
     }
 
     /**
-     * Formats a brand new page with an empty header.
-     * Called by AriesEngine when a new heap page is allocated.
+     * Formats a brand new page with an empty header and LSN set to 0.
      */
     public void init() {
         buffer.putInt(0, page.getPageId());
-        buffer.putInt(4, 0); // slotCount = 0
+        buffer.putInt(4, 0);   // slotCount = 0
+        buffer.putLong(8, 0L); // PageLSN = 0
     }
+
+    // --- NEW: PageLSN Getters and Setters ---
+    public long getPageLsn() {
+        return buffer.getLong(8);
+    }
+
+    public void setPageLsn(long lsn) {
+        buffer.putLong(8, lsn);
+    }
+    // ----------------------------------------
 
     public int getSlotCount() {
         return buffer.getInt(4);
@@ -151,5 +164,4 @@ public class SlottedPage {
         buffer.putInt(slotLocation + 4, 0); 
         return true;
     }
-    
 }
