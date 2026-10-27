@@ -9,6 +9,7 @@ AriesDB is a custom-built, disk-backed, page-oriented database engine implemente
 * **Buffer pool:** Pages are loaded on demand and evicted with a Clock replacement algorithm. The buffer pools use a STEAL / NO-FORCE policy.
 * **Write-ahead log:** Changes are appended to a sequential `.log` file before being applied to the data and index pages. On startup, the engine uses the WAL and latest checkpoint to recover the database.
 * **Transactions:** The CLI supports explicit `begin`, `commit`, and `rollback` commands. Writes issued outside an explicit transaction are automatically committed.
+* **Two-phase locking:** Transactions acquire shared locks for reads and exclusive locks for writes. Locks are held until commit or rollback; lock acquisition waits for up to two seconds before timing out.
 
 ## Project Structure
 
@@ -90,6 +91,16 @@ rollback
 ```
 
 If no transaction is active, each write command uses its own transaction and commits automatically.
+
+### Demonstrate transaction locking
+
+The `test-locks` command runs two threads against key `50`: one updates the key and holds its exclusive lock for three seconds, while the other attempts a read using a shared lock. Since lock acquisition times out after two seconds, the read demonstrates contention by timing out before the writer commits.
+
+```text
+test-locks
+```
+
+The command seeds key `50` with `Initial` before starting the contention test. Run it on a database where key `50` can be inserted.
 
 ### Checkpoint and shutdown
 
