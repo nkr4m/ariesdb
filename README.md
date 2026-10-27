@@ -25,3 +25,32 @@ AriesDB separates concerns into dedicated storage managers, ensuring robust scal
 Compile the multi-module Maven project from the root directory:
 ```bash
 mvn clean install -DskipTests
+```
+
+### 2. Run the CLI
+Boot the interactive Spring Shell prompt:
+```bash
+mvn spring-boot:run -pl aries-cli
+```
+
+
+### 3. Core Commands & Stress Test Example
+Once inside the CLI prompt, initialize the database and run a stress test to trigger dynamic B-Tree page splits. The engine handles 1,000 durable insertions in under 600ms.
+```bash
+$>start testdb
+SUCCESS: AriesDB started. Files bound to: ./aries_data/testdb
+
+$>stress 1000
+STRESS TEST SUCCESS -> Inserted 1000 records in 583ms. B-Tree splits executed.
+
+$>insert 42 "AriesDB Core Node"
+INSERT 0 1 -> Record stored and indexed under Key: 42
+
+$>read 42
+Data: [Payload-42]
+
+$>checkpoint
+Starting Checkpoint...
+Checkpoint complete at log offset: 77983
+CHECKPOINT SUCCESS -> Dirty pages flushed and WAL offset saved.
+```
