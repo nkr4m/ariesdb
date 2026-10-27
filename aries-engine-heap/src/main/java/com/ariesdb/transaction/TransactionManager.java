@@ -4,68 +4,59 @@ import com.ariesdb.common.utils.RID;
 import com.ariesdb.storage.data.DiskDataStore;
 import com.ariesdb.storage.index.DiskBMinusTreeStore;
 import com.ariesdb.wal.LogManager;
-import com.ariesdb.wal.LogType;
 import com.ariesdb.wal.LogRecord;
+import com.ariesdb.wal.LogType;
 
 import java.util.List;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 
 public class TransactionManager {
-    private final AtomicLong nextTxnId;
-    private final ConcurrentHashMap<Long, Transaction> activeTransactions;
+    
     private final LogManager logManager;
     private final DiskDataStore dataStore;
     private final DiskBMinusTreeStore btreeStore;
+    private final AtomicLong nextTxnId = new AtomicLong(1);
 
     public TransactionManager(LogManager logManager, DiskDataStore dataStore, DiskBMinusTreeStore btreeStore) {
         this.logManager = logManager;
         this.dataStore = dataStore;
         this.btreeStore = btreeStore;
-        this.nextTxnId = new AtomicLong(1);
-        this.activeTransactions = new ConcurrentHashMap<>();
     }
 
     public Transaction begin() {
-        long txnId = nextTxnId.getAndIncrement();
-        Transaction txn = new Transaction(txnId);
-        activeTransactions.put(txnId, txn);
+        Transaction txn = new Transaction(nextTxnId.getAndIncrement());
+        txn.setState(TransactionState.ACTIVE);
         return txn;
     }
 
     public void commit(Transaction txn) throws Exception {
-        txn.setState(TransactionState.COMMITTED);
+        if (txn.getState() != TransactionState.ACTIVE) return;
+        
         logManager.appendLog(txn.getTxnId(), LogType.COMMIT, -1, -1, -1, null);
-        activeTransactions.remove(txn.getTxnId());
+        txn.setState(TransactionState.COMMITTED);
     }
 
     public void abort(Transaction txn) throws Exception {
-        txn.setState(TransactionState.ABORTED);
-        
-        // Physically UNDO the operations in reverse order
-        undoTransaction(txn); 
-        
-        logManager.appendLog(txn.getTxnId(), LogType.ABORT, -1, -1, -1, null);
-        activeTransactions.remove(txn.getTxnId());
-    }
+        if (txn.getState() != TransactionState.ACTIVE) return;
 
-    private void undoTransaction(Transaction txn) throws Exception {
-        List<LogRecord> records = txn.getLogRecords();
+        List<LogRecord> logs = txn.getLogRecords();
         
-        // Iterate backward (LIFO)
-        for (int i = records.size() - 1; i >= 0; i--) {
-            LogRecord record = records.get(i);
+        // In-Memory LIFO Reversal for Rollback
+        for (int i = logs.size() - 1; i >= 0; i--) {
+            LogRecord record = logs.get(i);
             
             if (record.getType() == LogType.INSERT) {
-                System.out.println("UNDO: Removing inserted key " + record.getKey());
                 dataStore.undoInsert(record.getPageId(), record.getSlotId());
-                
-            } else if (record.getType() == LogType.DELETE || record.getType() == LogType.UPDATE) {
-                System.out.println("UNDO: Restoring key " + record.getKey());
-                // Re-insert the old data physically and update the B-Tree pointer!
-                RID newRid = dataStore.insertRecord(txn, record.getKey(), record.getData());
+            } 
+            else if (record.getType() == LogType.DELETE || record.getType() == LogType.UPDATE) {
+                // Re-insert the old data
+                Transaction dummyTxn = new Transaction(txn.getTxnId());
+                RID newRid = dataStore.insertRecord(dummyTxn, record.getKey(), record.getData());
                 btreeStore.insert(record.getKey(), newRid);
             }
         }
+        
+        logManager.appendLog(txn.getTxnId(), LogType.ABORT, -1, -1, -1, null);
+        txn.setState(TransactionState.ABORTED);
     }
 }

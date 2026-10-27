@@ -124,13 +124,21 @@ public class DatabaseCommands {
     public String readRecord(@Argument(index = 0) int key) {
         if (!isRunning) return "ERROR: Please run 'start' first.";
 
+        boolean isAutoCommit = (currentTxn == null);
+        Transaction txn = isAutoCommit ? engine.begin() : currentTxn;
+
         try {
-            byte[] rawBytes = engine.read(key);
+            byte[] rawBytes = engine.read(txn, key);
+            
+            // Release the Shared Lock instantly if Auto-Commit
+            if (isAutoCommit) engine.commit(txn); 
+            
             if (rawBytes == null) {
                 return "ERROR: Record not found or was deleted (Tombstone).";
             }
             return "Data: [" + new String(rawBytes) + "]";
         } catch (Exception e) {
+            try { if (isAutoCommit) engine.rollback(txn); } catch (Exception ignored) {}
             return "ERROR: " + e.getMessage();
         }
     }
@@ -209,6 +217,79 @@ public class DatabaseCommands {
             return "ERROR during stress test: " + e.getMessage();
         }
     }
+    
+    @Command(name = "test-locks", description = "Run a multi-threaded test to see 2PL locking in action.")
+    public String testLocks() {
+        if (!isRunning) return "ERROR: Please run 'start' first.";
+        
+        System.out.println("Preparing: Inserting Key 50 -> 'Initial'");
+        Transaction initTxn = engine.begin();
+        try {
+            engine.insert(initTxn, 50, "Initial".getBytes());
+            engine.commit(initTxn);
+        } catch (Exception e) {
+            return "Init failed: " + e.getMessage();
+        }
+
+        Thread t1 = new Thread(() -> {
+            Transaction txnA = null;
+            try {
+                System.out.println("[Thread 1] Starting Transaction A...");
+                txnA = engine.begin();
+                System.out.println("[Thread 1] Updating Key 50 (Acquiring Exclusive Lock)...");
+                engine.update(txnA, 50, "Txn A Data".getBytes());
+                
+                System.out.println("[Thread 1] Lock Acquired! Sleeping for 3 seconds...");
+                Thread.sleep(3000); // Hold the lock longer than the 2000ms timeout!
+                
+                System.out.println("[Thread 1] Woke up. Committing Transaction A...");
+                engine.commit(txnA);
+                System.out.println("[Thread 1] Committed and Locks Released.");
+            } catch (Exception e) {
+                System.out.println("[Thread 1] ERROR: " + e.getMessage());
+                if (txnA != null) {
+                    try { engine.rollback(txnA); } catch (Exception ignored) {}
+                }
+            }
+        });
+
+        Thread t2 = new Thread(() -> {
+            Transaction txnB = null;
+            try {
+                Thread.sleep(500); // Give Thread 1 a 500ms head start
+                System.out.println("[Thread 2] Starting Transaction B...");
+                txnB = engine.begin();
+                
+                System.out.println("[Thread 2] Attempting to read Key 50 (Requesting Shared Lock)...");
+                System.out.println("[Thread 2] BLOCKED! Waiting for Thread 1 to release the lock...");
+                
+                // This will block for exactly 2000ms and then throw the RuntimeException we wrote in AriesEngine!
+                byte[] data = engine.read(txnB, 50); 
+                
+                System.out.println("[Thread 2] Read success: " + new String(data));
+                engine.commit(txnB);
+            } catch (Exception e) {
+                System.out.println("[Thread 2] CAUGHT EXPECTED EXCEPTION: " + e.getMessage());
+                if (txnB != null) {
+                    try { engine.rollback(txnB); } catch (Exception ignored) {}
+                }
+            }
+        });
+
+        t1.start();
+        t2.start();
+
+        try {
+            t1.join();
+            t2.join();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+
+        return "Test Complete! You just witnessed Strict 2PL Isolation.";
+    }
+    
+    
 
     // --- NEW: SYSTEM CRASH SIMULATION ---
 

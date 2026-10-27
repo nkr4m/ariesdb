@@ -8,6 +8,7 @@ import com.ariesdb.storage.disk.DiskManager;
 import com.ariesdb.storage.index.DiskBMinusTreeStore;
 import com.ariesdb.storage.page.Page;
 import com.ariesdb.storage.page.SlottedPage;
+import com.ariesdb.transaction.LockManager;
 import com.ariesdb.transaction.Transaction;
 import com.ariesdb.transaction.TransactionManager;
 import com.ariesdb.wal.CheckpointManager;
@@ -17,60 +18,52 @@ import com.ariesdb.wal.LogRecord;
 
 import java.nio.ByteBuffer;
 import java.util.List;
+import java.util.Set;
+import java.util.HashSet;
 
 public class AriesEngine<K extends Comparable<K>> implements AutoCloseable {
     
-    // --- STORAGE MANAGERS ---
     private final DiskManager heapDiskManager;
     private final DiskManager indexDiskManager;
     private final BufferPoolManager heapBufferPool;
     private final BufferPoolManager indexBufferPool;
     
-    // --- HIGH LEVEL STORES ---
     private final DiskDataStore dataStore;
     private final DiskBMinusTreeStore btreeStore;
 
-    // --- ARIES RECOVERY & TXN ---
     private final LogManager logManager;
     private final CheckpointManager checkpointManager;
     private final TransactionManager txnManager;
+    private final LockManager lockManager;
 
     public AriesEngine(DiskManager heapDiskManager, DiskManager indexDiskManager, String dbFilename, int btreeDegree) throws Exception {
         this.heapDiskManager = heapDiskManager;
         this.indexDiskManager = indexDiskManager;
         
-        // Separate buffer pools to prevent Page ID collisions
         this.heapBufferPool = new BufferPoolManager(50, heapDiskManager, new ClockReplacer(50));
         this.indexBufferPool = new BufferPoolManager(50, indexDiskManager, new ClockReplacer(50));
         
         this.logManager = new LogManager(dbFilename);
         this.checkpointManager = new CheckpointManager(dbFilename);
+        this.lockManager = new LockManager();
         
-        // B-Tree Root is permanently Page 0 in the .idx file
         this.btreeStore = new DiskBMinusTreeStore(indexBufferPool, 0); 
 
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-            try {
-                close();
-            } catch (Exception e) {
-                e.printStackTrace();
-            }
+            try { close(); } catch (Exception e) { e.printStackTrace(); }
         }));
 
         int heapPages = heapDiskManager.getTotalPages();
         int indexPages = indexDiskManager.getTotalPages();
         
         if (heapPages == 0 || indexPages == 0) {
-            // BRAND NEW DATABASE
             btreeStore.createNewTree(); 
             this.dataStore = new DiskDataStore(heapBufferPool, logManager, 0);
         } else {
-            // EXISTING DATABASE - Instant Startup
             this.dataStore = new DiskDataStore(heapBufferPool, logManager, heapPages - 1);
             recoverFromWAL();
         }
 
-        // Initialize TransactionManager after stores are successfully created
         this.txnManager = new TransactionManager(logManager, dataStore, btreeStore);
     }
 
@@ -84,16 +77,9 @@ public class AriesEngine<K extends Comparable<K>> implements AutoCloseable {
 
         try {
             List<LogRecord> pendingLogs = logManager.readLogsFromOffset(startOffset);
-            
-            // Track transactions that were active when the server crashed
-            java.util.Set<Long> loserTxns = new java.util.HashSet<>();
+            Set<Long> loserTxns = new HashSet<>();
 
-            // ==========================================
-            // PHASE 1: REDO (Scan Forward)
-            // ==========================================
             for (LogRecord record : pendingLogs) {
-                
-                // Keep track of which transactions finished
                 if (record.getType() == LogType.COMMIT || record.getType() == LogType.ABORT) {
                     loserTxns.remove(record.getTxnId());
                     continue;
@@ -104,12 +90,10 @@ public class AriesEngine<K extends Comparable<K>> implements AutoCloseable {
                 int keyVal = record.getKey();
                 RID rid = new RID(record.getPageId(), record.getSlotId());
 
-                // Heap recovery: Physically apply changes to the SlottedPage
                 Page page = heapBufferPool.fetchPage(record.getPageId());
                 boolean isStale = false;
                 try {
                     SlottedPage slottedPage = new SlottedPage(page);
-                    
                     if (record.getLsn() > slottedPage.getPageLsn()) {
                         isStale = true;
                         physicalRedoCount++;
@@ -122,39 +106,28 @@ public class AriesEngine<K extends Comparable<K>> implements AutoCloseable {
                         } else if (record.getType() == LogType.DELETE) {
                             slottedPage.deleteRecord(record.getSlotId());
                         }
-                        
                         slottedPage.setPageLsn(record.getLsn());
                     }
                 } finally {
                     heapBufferPool.unpinPage(record.getPageId(), isStale);
                 }
 
-                // Index recovery: Re-insert into the B-Tree
                 if (record.getType() == LogType.INSERT || record.getType() == LogType.UPDATE) {
                     btreeStore.insert(keyVal, rid);
                     replayedCount++;
                 } 
             }
             
-            // ==========================================
-            // PHASE 2: UNDO (Scan Backward LIFO)
-            // ==========================================
             if (!loserTxns.isEmpty()) {
                 System.out.println("Found " + loserTxns.size() + " crashed active transaction(s). Starting UNDO phase...");
                 
-                // Iterate backward through the logs
                 for (int i = pendingLogs.size() - 1; i >= 0; i--) {
                     LogRecord record = pendingLogs.get(i);
-                    
-                    // Only undo operations belonging to Loser Transactions
                     if (loserTxns.contains(record.getTxnId())) {
-                        
                         if (record.getType() == LogType.INSERT) {
                             dataStore.undoInsert(record.getPageId(), record.getSlotId());
                             undoneCount++;
-                            
                         } else if (record.getType() == LogType.DELETE || record.getType() == LogType.UPDATE) {
-                            // Create a dummy transaction just to log the undo operations
                             Transaction dummyTxn = new Transaction(record.getTxnId());
                             RID newRid = dataStore.insertRecord(dummyTxn, record.getKey(), record.getData());
                             btreeStore.insert(record.getKey(), newRid);
@@ -163,7 +136,6 @@ public class AriesEngine<K extends Comparable<K>> implements AutoCloseable {
                     }
                 }
                 
-                // Write final ABORT logs so we never undo these again on future reboots
                 for (Long txnId : loserTxns) {
                     logManager.appendLog(txnId, LogType.ABORT, -1, -1, -1, null);
                     System.out.println("Cleaned up and aborted crashed Transaction " + txnId);
@@ -188,38 +160,37 @@ public class AriesEngine<K extends Comparable<K>> implements AutoCloseable {
         System.out.println("Checkpoint complete at log offset: " + currentOffset);
     }
 
-    // --- TRANSACTION API ---
-
     public Transaction begin() {
         return txnManager.begin();
     }
 
     public void commit(Transaction txn) throws Exception {
         txnManager.commit(txn);
+        lockManager.releaseAllLocks(txn);
     }
 
     public void rollback(Transaction txn) throws Exception {
         txnManager.abort(txn);
+        lockManager.releaseAllLocks(txn);
     }
-
-    // --- CRUD API ---
 
     public void insert(Transaction txn, K key, byte[] data) throws Exception {
         int intKey = (Integer) key;
-        
-        // 1. Store the raw bytes in the heap
+        if (!lockManager.acquireExclusiveLock(txn, intKey)) {
+            throw new RuntimeException("Deadlock/Timeout acquiring Exclusive Lock on key: " + intKey);
+        }
         RID rid = dataStore.insertRecord(txn, intKey, data);
-        
-        // 2. Map the Key to the RID in the B-Tree
         btreeStore.insert(intKey, rid);
     }
     
     public boolean update(Transaction txn, K key, byte[] data) throws Exception {
         int intKey = (Integer) key;
+        if (!lockManager.acquireExclusiveLock(txn, intKey)) {
+            throw new RuntimeException("Deadlock/Timeout acquiring Exclusive Lock on key: " + intKey);
+        }
         RID existingRid = btreeStore.search(intKey);
         if (existingRid == null) return false; 
         
-        // Out-of-place update logs as a DELETE of old, INSERT of new internally
         dataStore.deleteRecord(txn, intKey, existingRid);
         insert(txn, key, data);
         return true;
@@ -227,20 +198,23 @@ public class AriesEngine<K extends Comparable<K>> implements AutoCloseable {
 
     public boolean delete(Transaction txn, K key) throws Exception {
         int intKey = (Integer) key;
+        if (!lockManager.acquireExclusiveLock(txn, intKey)) {
+            throw new RuntimeException("Deadlock/Timeout acquiring Exclusive Lock on key: " + intKey);
+        }
         RID existingRid = btreeStore.search(intKey);
         if (existingRid == null) return false;
 
-        // Mark the slot in the heap as deleted (Tombstoned)
         dataStore.deleteRecord(txn, intKey, existingRid);
         return true;
     }
 
-    public byte[] read(K key) { // Read doesn't need txn yet until we add 2PL locks
-        // 1. Find the RID in the B-Tree
-        RID rid = btreeStore.search((Integer) key);
+    public byte[] read(Transaction txn, K key) { 
+        int intKey = (Integer) key;
+        if (!lockManager.acquireSharedLock(txn, intKey)) {
+            throw new RuntimeException("Deadlock/Timeout acquiring Shared Lock on key: " + intKey);
+        }
+        RID rid = btreeStore.search(intKey);
         if (rid == null) return null; 
-        
-        // 2. Fetch the raw bytes from the heap
         return dataStore.getRecord(rid);
     }
 
