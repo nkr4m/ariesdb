@@ -4,14 +4,16 @@ import java.nio.ByteBuffer;
 
 public class LogRecord {
     private final long lsn;
+    private final long txnId; // Added TxnID
     private final LogType type;
     private final int pageId;
     private final int slotId;
     private final int key;
     private final byte[] data;
 
-    public LogRecord(long lsn, LogType type, int pageId, int slotId, int key, byte[] data) {
+    public LogRecord(long lsn, long txnId, LogType type, int pageId, int slotId, int key, byte[] data) {
         this.lsn = lsn;
+        this.txnId = txnId;
         this.type = type;
         this.pageId = pageId;
         this.slotId = slotId;
@@ -21,14 +23,16 @@ public class LogRecord {
 
     /**
      * Serializes the log record into a byte array for disk writing.
-     * Layout: [LSN (8)] [Type (4)] [PageId (4)] [SlotId (4)] [Key (4)] [DataLen (4)] [Data Bytes]
+     * Layout: [LSN (8)] [TxnId (8)] [Type (4)] [PageId (4)] [SlotId (4)] [Key (4)] [DataLen (4)] [Data Bytes]
      */
     public byte[] serialize() {
         int dataLen = data.length;
-        int totalSize = 8 + 4 + 4 + 4 + 4 + 4 + dataLen;
+        // 8 (lsn) + 8 (txnId) + 4 (type) + 4 (pageId) + 4 (slotId) + 4 (key) + 4 (dataLen) = 36
+        int totalSize = 36 + dataLen;
         
         ByteBuffer buffer = ByteBuffer.allocate(totalSize);
         buffer.putLong(lsn);
+        buffer.putLong(txnId);
         buffer.putInt(type.getId());
         buffer.putInt(pageId);
         buffer.putInt(slotId);
@@ -44,6 +48,7 @@ public class LogRecord {
      */
     public static LogRecord deserialize(ByteBuffer buffer) {
         long lsn = buffer.getLong();
+        long txnId = buffer.getLong();
         LogType type = LogType.fromId(buffer.getInt());
         int pageId = buffer.getInt();
         int slotId = buffer.getInt();
@@ -53,11 +58,12 @@ public class LogRecord {
         byte[] data = new byte[dataLen];
         buffer.get(data);
         
-        return new LogRecord(lsn, type, pageId, slotId, key, data);
+        return new LogRecord(lsn, txnId, type, pageId, slotId, key, data);
     }
 
     // Getters
     public long getLsn() { return lsn; }
+    public long getTxnId() { return txnId; }
     public LogType getType() { return type; }
     public int getPageId() { return pageId; }
     public int getSlotId() { return slotId; }

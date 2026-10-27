@@ -2,18 +2,14 @@ package com.ariesdb.wal;
 
 public enum LogType {
     INSERT(1),
-    DELETE(2),
-    UPDATE(3);
+    UPDATE(2),
+    DELETE(3),
+    COMMIT(4), // <-- NEW
+    ABORT(5);  // <-- NEW
 
     private final int id;
-
-    LogType(int id) {
-        this.id = id;
-    }
-
-    public int getId() {
-        return id;
-    }
+    LogType(int id) { this.id = id; }
+    public int getId() { return id; }
 
     public static LogType fromId(int id) {
         for (LogType type : values()) {
