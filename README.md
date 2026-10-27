@@ -1,56 +1,109 @@
 # AriesDB
 
-A custom-built, disk-backed, page-oriented database engine implemented in Java. AriesDB is designed from the ground up following enterprise-grade storage architectures and the ARIES recovery protocol. It successfully bridges the gap between instant RAM access and durable, physical disk storage.
+AriesDB is a custom-built, disk-backed, page-oriented database engine implemented in Java. It uses a heap file for record data, a B-Tree index file for keys, and a write-ahead log (WAL) for recovery.
 
 ## Core Architecture
 
-AriesDB separates concerns into dedicated storage managers, ensuring robust scaling and isolation between raw data and index structures.
-
-*   **Dual-File Storage System:** The engine operates on two distinct physical files: `.db` (Heap Data) and `.idx` (B-Tree Index). Each file is managed by its own isolated `BufferPoolManager` to prevent Page ID collisions.
-*   **Page-Oriented Layout:** Disk I/O is optimized using 4096-byte (4KB) frames. 
-    *   **Heap Data:** Uses a `SlottedPage` layout with a dynamic directory at the end of the frame to manage variable-length string payloads and handle fragmentation.
-    *   **Index Data:** Uses a `BMinusTreePage` layout with strict, fixed-width byte offsets for instantaneous array access (250 Keys, 251 Child Pointers, 250 RIDs per page).
-*   **Buffer Pool Manager:** Implements a STEAL / NO-FORCE caching policy. 4KB pages are loaded into RAM strictly on-demand and evicted using a Clock Replacement algorithm, shielding the system from slow random disk reads.
-*   **Write-Ahead Logging (WAL):** All modifications are instantly appended to a sequential `testdb.log` file before flushing pages to the physical disk. On system crash, the engine reads the WAL backward and physically re-applies missing operations to the stale 4KB frames.
+* **Dual-file storage:** Each database uses a `.db` heap file and a `.idx` B-Tree index file. Each file has its own `BufferPoolManager`.
+* **Page-oriented layout:** Storage uses 4096-byte pages. Heap pages use a slotted-page layout for variable-length records; index pages store fixed-width B-Tree entries.
+* **Buffer pool:** Pages are loaded on demand and evicted with a Clock replacement algorithm. The buffer pools use a STEAL / NO-FORCE policy.
+* **Write-ahead log:** Changes are appended to a sequential `.log` file before being applied to the data and index pages. On startup, the engine uses the WAL and latest checkpoint to recover the database.
+* **Transactions:** The CLI supports explicit `begin`, `commit`, and `rollback` commands. Writes issued outside an explicit transaction are automatically committed.
 
 ## Project Structure
 
-*   `ariesdb-parent`: The root Maven project managing dependencies.
-*   `aries-engine-heap`: The core storage engine containing the `DiskManager`, `BufferPoolManager`, `LogManager`, `DiskDataStore`, and `DiskBMinusTreeStore`.
-*   `aries-cli`: A Spring Shell interactive command-line interface for booting the engine, executing queries, and triggering checkpoints.
+* `ariesdb-parent`: Root Maven project for the modules.
+* `aries-engine-heap`: Storage engine, buffer pools, heap and B-Tree stores, WAL, checkpointing, and transaction management.
+* `aries-cli`: Spring Shell interface for managing the engine and running database commands.
 
 ## Getting Started
 
-### 1. Build the Project
-Compile the multi-module Maven project from the root directory:
+### Build
+
+From the repository root, build the multi-module project:
+
 ```bash
 mvn clean install -DskipTests
 ```
 
-### 2. Run the CLI
-Boot the interactive Spring Shell prompt:
+### Run the CLI
+
 ```bash
 mvn spring-boot:run -pl aries-cli
 ```
 
+## CLI Commands
 
-### 3. Core Commands & Stress Test Example
-Once inside the CLI prompt, initialize the database and run a stress test to trigger dynamic B-Tree page splits. The engine handles 1,000 durable insertions in under 600ms.
-```bash
-$>start testdb
-SUCCESS: AriesDB started. Files bound to: ./aries_data/testdb
+Commands below are entered at the Spring Shell prompt.
 
-$>stress 1000
-STRESS TEST SUCCESS -> Inserted 1000 records in 583ms. B-Tree splits executed.
+### Start a database
 
-$>insert 42 "AriesDB Core Node"
-INSERT 0 1 -> Record stored and indexed under Key: 42
+Starts the default database, `testdb`, under `./aries_data`. The database name can be changed:
 
-$>read 42
-Data: [Payload-42]
-
-$>checkpoint
-Starting Checkpoint...
-Checkpoint complete at log offset: 77983
-CHECKPOINT SUCCESS -> Dirty pages flushed and WAL offset saved.
+```text
+start
+start mydb
 ```
+
+The engine creates or opens the corresponding `.db`, `.idx`, and `.log` files.
+
+### Run the stress test
+
+The stress command inserts sequential integer keys starting at `0` in one transaction. Its optional count defaults to `1000`.
+
+```text
+stress
+stress 1000
+```
+
+Example output:
+
+```text
+STRESS TEST SUCCESS -> Group Committed 1000 records in <elapsed>ms. B-Tree splits executed.
+```
+
+The elapsed time depends on the machine and storage device; it is informational, not a performance guarantee. Run the test against a new or empty database: running it again with the same keys will encounter existing records.
+
+### Read, insert, update, and delete
+
+```text
+read 42
+insert 1000 "AriesDB Core Node"
+update 1000 "AriesDB Core Node v2"
+delete 1000
+```
+
+`read` retrieves a record by primary key. `update` writes a replacement record, and `delete` marks the record as deleted.
+
+### Use an explicit transaction
+
+Within an explicit transaction, inserts, updates, and deletes remain part of that transaction until committed or rolled back:
+
+```text
+begin
+insert 1001 "transactional record"
+commit
+
+begin
+insert 1002 "record to undo"
+rollback
+```
+
+If no transaction is active, each write command uses its own transaction and commits automatically.
+
+### Checkpoint and shutdown
+
+```text
+checkpoint
+exit
+```
+
+`checkpoint` flushes dirty pages and saves the WAL offset. `exit` shuts down gracefully and flushes pending buffers.
+
+### Simulate an abrupt crash
+
+```text
+crash
+```
+
+This command immediately halts the JVM and bypasses graceful shutdown. Use a disposable database for crash-recovery experiments; starting the same database again invokes WAL recovery.
