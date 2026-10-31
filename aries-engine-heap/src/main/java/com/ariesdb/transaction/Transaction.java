@@ -16,8 +16,9 @@ public class Transaction {
     private final Set<Integer> modifiedPages;
     
     // --- 2PL LOCK TRACKING ---
-    private final Set<Integer> sharedLocks;
-    private final Set<Integer> exclusiveLocks;
+    // CHANGED: Sets now hold Strings (e.g., "tableName:key")
+    private final Set<String> sharedLocks;
+    private final Set<String> exclusiveLocks;
 
     public Transaction(long txnId) {
         this.txnId = txnId;
@@ -39,9 +40,11 @@ public class Transaction {
     public void addModifiedPage(int pageId) { modifiedPages.add(pageId); }
     public Set<Integer> getModifiedPages() { return modifiedPages; }
 
-    public void addSharedLock(int key) { sharedLocks.add(key); }
-    public void addExclusiveLock(int key) { exclusiveLocks.add(key); }
+    // CHANGED: Accept String keys
+    public void addSharedLock(String key) { sharedLocks.add(key); }
+    public void addExclusiveLock(String key) { exclusiveLocks.add(key); }
     
-    public Set<Integer> getSharedLocks() { return sharedLocks; }
-    public Set<Integer> getExclusiveLocks() { return exclusiveLocks; }
+    // CHANGED: Return Set<String>
+    public Set<String> getSharedLocks() { return sharedLocks; }
+    public Set<String> getExclusiveLocks() { return exclusiveLocks; }
 }

@@ -14,8 +14,12 @@ public class LogManager implements AutoCloseable {
     private final FileChannel logChannel;
     private final AtomicLong globalLSN;
 
-    public LogManager(String dbFilename) throws Exception {
-        this.logFilename = dbFilename.replaceAll("\\.db$", "") + ".log";
+    public LogManager(String dbDir) throws Exception {
+        // The WAL now lives in the main database directory alongside the table files
+        File dir = new File(dbDir);
+        if (!dir.exists()) dir.mkdirs();
+        
+        this.logFilename = dbDir + "/wal.log";
         File file = new File(logFilename);
         
         this.logFile = new RandomAccessFile(file, "rw");
@@ -25,19 +29,17 @@ public class LogManager implements AutoCloseable {
         this.globalLSN = new AtomicLong(existingLength > 0 ? findLatestLSN() : 1L);
     }
 
-    /**
-     * Appends a new log record to the WAL file.
-     */
-    public synchronized LogRecord appendLog(long txnId, LogType type, int pageId, int slotId, int key, byte[] data) throws Exception {
+    // CHANGED: Now requires tableName
+    public synchronized LogRecord appendLog(long txnId, LogType type, String tableName, int pageId, int slotId, int key, byte[] data) throws Exception {
         long lsn = globalLSN.getAndIncrement();
-        LogRecord record = new LogRecord(lsn, txnId, type, pageId, slotId, key, data);
+        LogRecord record = new LogRecord(lsn, txnId, type, tableName, pageId, slotId, key, data);
         byte[] serialized = record.serialize();
 
         logChannel.position(logChannel.size());
         logChannel.write(ByteBuffer.wrap(serialized));
         logChannel.force(false);
 
-        return record; // <-- Return the object!
+        return record;
     }
 
     public long getCurrentOffset() throws Exception {
@@ -51,25 +53,21 @@ public class LogManager implements AutoCloseable {
         logChannel.position(startOffset);
         
         while (logChannel.position() < logChannel.size()) {
-            // LSN(8) + TxnId(8) + Type(4) + PageId(4) + SlotId(4) + Key(4) + DataLen(4) = 36 bytes header
-            ByteBuffer headerBuffer = ByteBuffer.allocate(36);
-            logChannel.read(headerBuffer);
-            headerBuffer.flip();
+            // 1. Read the 4-byte length prefix
+            ByteBuffer lengthBuffer = ByteBuffer.allocate(4);
+            int bytesRead = logChannel.read(lengthBuffer);
+            if (bytesRead < 4) break; 
             
-            headerBuffer.getLong(); // lsn
-            headerBuffer.getLong(); // txnId
-            headerBuffer.getInt();  // type
-            headerBuffer.getInt();  // pageId
-            headerBuffer.getInt();  // slotId
-            headerBuffer.getInt();  // key
-            int dataLen = headerBuffer.getInt();
+            lengthBuffer.flip();
+            int payloadSize = lengthBuffer.getInt();
 
-            ByteBuffer fullRecordBuffer = ByteBuffer.allocate(36 + dataLen);
-            logChannel.position(logChannel.position() - 36); 
-            logChannel.read(fullRecordBuffer);
-            fullRecordBuffer.flip();
+            // 2. Read the exact payload
+            ByteBuffer recordBuffer = ByteBuffer.allocate(payloadSize);
+            logChannel.read(recordBuffer);
+            recordBuffer.flip();
 
-            LogRecord record = LogRecord.deserialize(fullRecordBuffer);
+            // 3. Delegate to LogRecord
+            LogRecord record = LogRecord.deserialize(recordBuffer);
             records.add(record);
         }
         return records;

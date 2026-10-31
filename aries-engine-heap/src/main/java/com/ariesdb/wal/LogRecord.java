@@ -1,72 +1,90 @@
 package com.ariesdb.wal;
 
 import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
 
 public class LogRecord {
     private final long lsn;
-    private final long txnId; // Added TxnID
+    private final long txnId;
     private final LogType type;
+    private final String tableName; // NEW: The WAL now tracks which table this log belongs to!
     private final int pageId;
     private final int slotId;
     private final int key;
     private final byte[] data;
 
-    public LogRecord(long lsn, long txnId, LogType type, int pageId, int slotId, int key, byte[] data) {
+    public LogRecord(long lsn, long txnId, LogType type, String tableName, int pageId, int slotId, int key, byte[] data) {
         this.lsn = lsn;
         this.txnId = txnId;
         this.type = type;
+        this.tableName = tableName;
         this.pageId = pageId;
         this.slotId = slotId;
         this.key = key;
-        this.data = data != null ? data : new byte[0];
+        this.data = data;
     }
 
-    /**
-     * Serializes the log record into a byte array for disk writing.
-     * Layout: [LSN (8)] [TxnId (8)] [Type (4)] [PageId (4)] [SlotId (4)] [Key (4)] [DataLen (4)] [Data Bytes]
-     */
-    public byte[] serialize() {
-        int dataLen = data.length;
-        // 8 (lsn) + 8 (txnId) + 4 (type) + 4 (pageId) + 4 (slotId) + 4 (key) + 4 (dataLen) = 36
-        int totalSize = 36 + dataLen;
-        
-        ByteBuffer buffer = ByteBuffer.allocate(totalSize);
-        buffer.putLong(lsn);
-        buffer.putLong(txnId);
-        buffer.putInt(type.getId());
-        buffer.putInt(pageId);
-        buffer.putInt(slotId);
-        buffer.putInt(key);
-        buffer.putInt(dataLen);
-        buffer.put(data);
-        
-        return buffer.array();
-    }
-
-    /**
-     * Deserializes raw bytes from the log file back into a LogRecord object.
-     */
-    public static LogRecord deserialize(ByteBuffer buffer) {
-        long lsn = buffer.getLong();
-        long txnId = buffer.getLong();
-        LogType type = LogType.fromId(buffer.getInt());
-        int pageId = buffer.getInt();
-        int slotId = buffer.getInt();
-        int key = buffer.getInt();
-        int dataLen = buffer.getInt();
-        
-        byte[] data = new byte[dataLen];
-        buffer.get(data);
-        
-        return new LogRecord(lsn, txnId, type, pageId, slotId, key, data);
-    }
-
-    // Getters
     public long getLsn() { return lsn; }
     public long getTxnId() { return txnId; }
     public LogType getType() { return type; }
+    public String getTableName() { return tableName; }
     public int getPageId() { return pageId; }
     public int getSlotId() { return slotId; }
     public int getKey() { return key; }
     public byte[] getData() { return data; }
+
+    public byte[] serialize() {
+        byte[] tableBytes = (tableName == null ? "" : tableName).getBytes(StandardCharsets.UTF_8);
+        int dataLen = (data != null) ? data.length : 0;
+        
+        // Calculate exact payload size
+        int payloadSize = 40 + tableBytes.length + dataLen; 
+        
+        // We add 4 bytes at the very start to store the payloadSize itself
+        ByteBuffer buffer = ByteBuffer.allocate(4 + payloadSize);
+        
+        buffer.putInt(payloadSize); // 1. Length-Prefix for the LogManager
+        buffer.putLong(lsn);
+        buffer.putLong(txnId);
+        buffer.putInt(type.ordinal());
+        
+        buffer.putInt(tableBytes.length);
+        buffer.put(tableBytes);
+        
+        buffer.putInt(pageId);
+        buffer.putInt(slotId);
+        buffer.putInt(key);
+        
+        buffer.putInt(dataLen);
+        if (data != null) {
+            buffer.put(data);
+        }
+        
+        return buffer.array();
+    }
+
+    public static LogRecord deserialize(ByteBuffer buffer) {
+        long lsn = buffer.getLong();
+        long txnId = buffer.getLong();
+        LogType type = LogType.values()[buffer.getInt()];
+        
+        int tableLen = buffer.getInt();
+        byte[] tableBytes = new byte[tableLen];
+        buffer.get(tableBytes);
+        String tableName = new String(tableBytes, StandardCharsets.UTF_8);
+        if (tableName.isEmpty()) tableName = null;
+
+        int pageId = buffer.getInt();
+        int slotId = buffer.getInt();
+        int key = buffer.getInt();
+        
+        int dataLen = buffer.getInt();
+        byte[] data = null;
+        if (dataLen > 0) {
+            data = new byte[dataLen];
+            buffer.get(data);
+        }
+        
+        return new LogRecord(lsn, txnId, type, tableName, pageId, slotId, key, data);
+    }
 }

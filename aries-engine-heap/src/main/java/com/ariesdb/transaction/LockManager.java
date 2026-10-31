@@ -6,9 +6,11 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 public class LockManager {
     
-    private final ConcurrentHashMap<Integer, ReentrantReadWriteLock> lockTable = new ConcurrentHashMap<>();
+    // CHANGED: Map key is now a String
+    private final ConcurrentHashMap<String, ReentrantReadWriteLock> lockTable = new ConcurrentHashMap<>();
 
-    public boolean acquireSharedLock(Transaction txn, int key) {
+    // CHANGED: Accept String key
+    public boolean acquireSharedLock(Transaction txn, String key) {
         if (txn.getSharedLocks().contains(key) || txn.getExclusiveLocks().contains(key)) return true;
 
         ReentrantReadWriteLock rwLock = lockTable.computeIfAbsent(key, k -> new ReentrantReadWriteLock());
@@ -23,7 +25,8 @@ public class LockManager {
         return false;
     }
 
-    public boolean acquireExclusiveLock(Transaction txn, int key) {
+    // CHANGED: Accept String key
+    public boolean acquireExclusiveLock(Transaction txn, String key) {
         if (txn.getExclusiveLocks().contains(key)) return true; 
 
         ReentrantReadWriteLock rwLock = lockTable.computeIfAbsent(key, k -> new ReentrantReadWriteLock());
@@ -39,13 +42,15 @@ public class LockManager {
     }
 
     public void releaseAllLocks(Transaction txn) {
-        for (Integer key : txn.getExclusiveLocks()) {
+        // CHANGED: Iterate over String keys
+        for (String key : txn.getExclusiveLocks()) {
             ReentrantReadWriteLock rwLock = lockTable.get(key);
             if (rwLock != null) rwLock.writeLock().unlock();
         }
         txn.getExclusiveLocks().clear();
 
-        for (Integer key : txn.getSharedLocks()) {
+        // CHANGED: Iterate over String keys
+        for (String key : txn.getSharedLocks()) {
             ReentrantReadWriteLock rwLock = lockTable.get(key);
             if (rwLock != null) rwLock.readLock().unlock();
         }

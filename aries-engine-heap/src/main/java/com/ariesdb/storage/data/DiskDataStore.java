@@ -14,9 +14,12 @@ import java.nio.ByteBuffer;
 public class DiskDataStore {
     private final BufferPoolManager bpm;
     private final LogManager logManager;
+    private final String tableName; // NEW: Tracks which table this store belongs to
     private int currentHeapPageId;
 
-    public DiskDataStore(BufferPoolManager bpm, LogManager logManager, int startingPageId) throws Exception {
+    // CHANGED: Constructor now requires the tableName String as the first argument
+    public DiskDataStore(String tableName, BufferPoolManager bpm, LogManager logManager, int startingPageId) throws Exception {
+        this.tableName = tableName;
         this.bpm = bpm;
         this.logManager = logManager;
         this.currentHeapPageId = startingPageId;
@@ -46,8 +49,8 @@ public class DiskDataStore {
             SlottedPage slottedPage = new SlottedPage(page);
             slotId = slottedPage.insertRecord(payload);
             if (slotId != -1) {
-                // Log and attach to Txn
-                LogRecord record = logManager.appendLog(txn.getTxnId(), LogType.INSERT, targetPageId, slotId, key, data);
+                // CHANGED: Pass tableName to LogManager
+                LogRecord record = logManager.appendLog(txn.getTxnId(), LogType.INSERT, tableName, targetPageId, slotId, key, data);
                 slottedPage.setPageLsn(record.getLsn());
                 txn.addLogRecord(record);
                 txn.addModifiedPage(targetPageId);
@@ -56,7 +59,6 @@ public class DiskDataStore {
             bpm.unpinPage(targetPageId, slotId != -1);
         }
 
-        // If the current page was full, allocate a new one
         if (slotId == -1) {
             targetPageId++;
             currentHeapPageId = targetPageId; 
@@ -67,8 +69,8 @@ public class DiskDataStore {
                 slottedPage.init(); 
                 slotId = slottedPage.insertRecord(payload);
                 
-                // Log and attach to Txn
-                LogRecord record = logManager.appendLog(txn.getTxnId(), LogType.INSERT, targetPageId, slotId, key, data);
+                // CHANGED: Pass tableName to LogManager
+                LogRecord record = logManager.appendLog(txn.getTxnId(), LogType.INSERT, tableName, targetPageId, slotId, key, data);
                 slottedPage.setPageLsn(record.getLsn());
                 txn.addLogRecord(record);
                 txn.addModifiedPage(targetPageId);
@@ -99,7 +101,6 @@ public class DiskDataStore {
         try {
             SlottedPage slottedPage = new SlottedPage(page);
             
-            // 1. Fetch old data BEFORE deleting so we can UNDO later
             byte[] rawBytes = slottedPage.getRecord(rid.getSlotId());
             byte[] oldData = null;
             if (rawBytes != null) {
@@ -107,11 +108,10 @@ public class DiskDataStore {
                 System.arraycopy(rawBytes, 4, oldData, 0, oldData.length);
             }
             
-            // 2. Tombstone the slot
             slottedPage.deleteRecord(rid.getSlotId());
             
-            // 3. Log the DELETE with the old data
-            LogRecord record = logManager.appendLog(txn.getTxnId(), LogType.DELETE, rid.getPageId(), rid.getSlotId(), key, oldData);
+            // CHANGED: Pass tableName to LogManager
+            LogRecord record = logManager.appendLog(txn.getTxnId(), LogType.DELETE, tableName, rid.getPageId(), rid.getSlotId(), key, oldData);
             slottedPage.setPageLsn(record.getLsn());
             
             txn.addLogRecord(record);
@@ -121,12 +121,11 @@ public class DiskDataStore {
         }
     }
 
-    // NEW: Used by the TransactionManager during a Rollback
     public void undoInsert(int pageId, int slotId) throws Exception {
         Page page = bpm.fetchPage(pageId);
         try {
             SlottedPage slottedPage = new SlottedPage(page);
-            slottedPage.deleteRecord(slotId); // Tombstone the rolled-back insert
+            slottedPage.deleteRecord(slotId); 
         } finally {
             bpm.unpinPage(pageId, true);
         }
